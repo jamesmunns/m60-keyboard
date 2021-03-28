@@ -1,0 +1,6 @@
+[submodule "vendor/keyberon"]
+	path = vendor/keyberon
+	url = https://github.com/TeXitoi/keyberon.git
+[submodule "vendor/nrf-hal"]
+	path = vendor/nrf-hal
+	url = https://github.com/Disasm/nrf-hal.git
