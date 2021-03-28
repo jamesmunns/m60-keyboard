@@ -1,15 +1,16 @@
 #![no_main]
 #![no_std]
+
 #![allow(unused_imports)]
 
-use generic_array::GenericArray;
 use hal::clocks::ExternalOscillator;
 use hal::clocks::Internal;
 use hal::clocks::LfOscStopped;
 use keyberon::action::HoldTapConfig;
+use keyboard as _;
+use generic_array::GenericArray;
 use keyberon::layout::CustomEvent;
 use keyberon::layout::Event;
-use keyboard as _;
 
 //
 // use stm32f4xx_hal::gpio::Alternate;
@@ -30,9 +31,11 @@ use keyberon::key_code::KeyCode::*;
 use keyberon::key_code::{KbHidReport, KeyCode};
 use keyberon::layout::Layout;
 use keyberon::matrix::{Matrix, PressedKeys};
-use nrf52840_hal::time::U32Ext;
+use nrf52840_hal::{
+    time::U32Ext,
+};
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{Ordering, AtomicU32};
 
 use rtic::app;
 
@@ -44,11 +47,11 @@ use nrf52840_hal::{
         p1::{Parts as P1Parts, P1_04},
         Input, Level, Output, Pin, PullUp, PushPull,
     },
-    pac::{Interrupt, Peripherals, TIMER0, TIMER2, TWIM0, UARTE0, USBD},
+    pac::{Peripherals, TIMER0, TIMER1, TIMER2, TWIM0, UARTE0, USBD},
     ppi::{Parts as PpiParts, Ppi0},
     spim::{Frequency, Pins as SpimPins, Spim, MODE_0},
     spis::{Mode, Pins as SpisPins, Spis, Transfer},
-    timer::{Instance as TimerInstance, OneShot, Periodic, Timer},
+    timer::{Instance as TimerInstance, Periodic, Timer, OneShot},
     twim::{Frequency as TwimFrequency, Pins as TwimPins},
     uarte::{Baudrate, Parity, Pins},
     usbd::Usbd,
@@ -73,16 +76,16 @@ use core::iter::Cycle;
 // use stm32f4xx_hal::stm32::{self, DWT, SPI5};
 //
 
-use cortex_m::asm::delay;
 use smart_leds::RGB;
-use smart_leds::{colors, gamma, SmartLedsWrite, RGB8};
 use ws2812_spi::{Ws2812, MODE};
+use cortex_m::asm::delay;
+use smart_leds::{RGB8, SmartLedsWrite, colors, gamma};
 
 type UsbClass<'a> = keyberon::Class<'static, Usbd<'a>, Leds>;
 type UsbDevice<'a> = usb_device::device::UsbDevice<'static, Usbd<'a>>;
 
 pub struct Leds {
-    //     caps_lock: gpio::gpioc::PC13<gpio::Output<gpio::PushPull>>,
+//     caps_lock: gpio::gpioc::PC13<gpio::Output<gpio::PushPull>>,
 }
 
 impl keyberon::keyboard::Leds for Leds {
@@ -107,6 +110,7 @@ impl keyberon::keyboard::Leds for Leds {
         defmt::info!("kana: {:?}", status)
     }
 }
+
 
 pub struct Cols(
     pub Pin<Input<PullUp>>,
@@ -150,14 +154,14 @@ const L2_ENTER: Action = HoldTap {
     hold: &l(2),
     tap: &k(Enter),
     config: HoldTapConfig::Default, // ??
-    tap_hold_interval: 1000,        // ??
+    tap_hold_interval: 1000, // ??
 };
 const L1_SP: Action = HoldTap {
     timeout: 200,
     hold: &l(1),
     tap: &k(Space),
     config: HoldTapConfig::Default, // ??
-    tap_hold_interval: 1000,        // ??
+    tap_hold_interval: 1000, // ??
 };
 const CSPACE: Action = m(&[LCtrl, Space]);
 macro_rules! s {
@@ -174,33 +178,45 @@ macro_rules! a {
 static CTR_TCK: AtomicU32 = AtomicU32::new(0);
 static CTR_RPT: AtomicU32 = AtomicU32::new(0);
 
+const TODO: Action = Action::Trans;
+
 #[rustfmt::skip]
 pub static LAYERS: keyberon::layout::Layers = &[
     &[
-        &[k(Grave),  k(Kb1),k(Kb2),k(Kb3),  k(Kb4),k(Kb5), k(Kb6),   k(Kb7),  k(Kb8), k(Kb9),  k(Kb0),   k(Minus)   ],
-        &[k(Tab),     k(Q), k(W),  k(E),    k(R), k(T),    k(Y),     k(U),    k(I),   k(O),    k(P),     k(LBracket)],
-        &[k(RBracket),k(A), k(S),  k(D),    k(F), k(G),    k(H),     k(J),    k(K),   k(L),    k(SColon),k(Quote)   ],
-        &[k(Equal),   k(Z), k(X),  k(C),    k(V), k(B),    k(N),     k(M),    k(Comma),k(Dot), k(Slash), k(Bslash)  ],
-        &[Trans,      Trans,k(LGui),k(LAlt),L1_SP,k(LCtrl),k(RShift),L2_ENTER,k(RAlt),k(BSpace),Trans,   Trans      ],
-    ], &[
-        &[k(F1),         k(F2),   k(F3),     k(F4),     k(F5),    k(F6),k(F7),      k(F8),  k(F9),    k(F10), k(F11),  k(F12)],
-        &[Trans,         k(Pause),Trans,     k(PScreen),Trans,    Trans,Trans,      Trans,  k(Delete),Trans,  Trans,   Trans ],
-        &[Trans,         Trans,   k(NumLock),k(Insert), k(Escape),Trans,k(CapsLock),k(Left),k(Down),  k(Up),  k(Right),Trans ],
-        &[k(NonUsBslash),k(Undo), CUT,       COPY,      PASTE,    Trans,Trans,      k(Home),k(PgDown),k(PgUp),k(End),  Trans ],
-        &[Trans,         Trans,   Trans,     Trans,     Trans,    Trans,Trans,      Trans,  Trans,    Trans,  Trans,   Trans ],
-    ], &[
-        &[Trans,    Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans    ],
-        &[s!(Grave),s!(Kb1),s!(Kb2),s!(Kb3),s!(Kb4),s!(Kb5),s!(Kb6),s!(Kb7),s!(Kb8),s!(Kb9),s!(Kb0),s!(Minus)],
-        &[ k(Grave), k(Kb1), k(Kb2), k(Kb3), k(Kb4), k(Kb5), k(Kb6), k(Kb7), k(Kb8), k(Kb9), k(Kb0), k(Minus)],
-        &[a!(Grave),a!(Kb1),a!(Kb2),a!(Kb3),a!(Kb4),a!(Kb5),a!(Kb6),a!(Kb7),a!(Kb8),a!(Kb9),a!(Kb0),a!(Minus)],
-        &[Trans,    Trans,  Trans,  Trans,  CSPACE, Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans    ],
-    ], &[
-        &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-        &[k(F1),k(F2),k(F3),k(F4),k(F5),k(F6),k(F7),k(F8),k(F9),k(F10),k(F11),k(F12)],
-        &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-        &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-        &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-    ],
+        &[k(Escape),  k(Kb1),  k(Kb2),  k(Kb3),    k(Kb4),    k(Kb5),     k(Kb6),   k(Kb7)],
+        &[k(Kb8),     k(Kb9),  k(Kb0),  k(Minus),  k(Equal),  k(Delete),  TODO,     TODO  ],
+        &[TODO, TODO, TODO, TODO, TODO, TODO, TODO, TODO],
+        &[TODO, TODO, TODO, TODO, TODO, TODO, TODO, TODO],
+        &[TODO, TODO, TODO, TODO, TODO, TODO, TODO, TODO],
+        &[TODO, TODO, TODO, TODO, TODO, TODO, TODO, TODO],
+        &[TODO, TODO, TODO, TODO, TODO, TODO, TODO, TODO],
+        &[TODO, TODO, TODO, TODO, TODO, TODO, TODO, TODO],
+    ]
+    // &[
+    //     &[k(Grave),  k(Kb1),k(Kb2),k(Kb3),  k(Kb4),k(Kb5), k(Kb6),   k(Kb7),  k(Kb8), k(Kb9),  k(Kb0),   k(Minus)   ],
+    //     &[k(Tab),     k(Q), k(W),  k(E),    k(R), k(T),    k(Y),     k(U),    k(I),   k(O),    k(P),     k(LBracket)],
+    //     &[k(RBracket),k(A), k(S),  k(D),    k(F), k(G),    k(H),     k(J),    k(K),   k(L),    k(SColon),k(Quote)   ],
+    //     &[k(Equal),   k(Z), k(X),  k(C),    k(V), k(B),    k(N),     k(M),    k(Comma),k(Dot), k(Slash), k(Bslash)  ],
+    //     &[Trans,      Trans,k(LGui),k(LAlt),L1_SP,k(LCtrl),k(RShift),L2_ENTER,k(RAlt),k(BSpace),Trans,   Trans      ],
+    // ], &[
+    //     &[k(F1),         k(F2),   k(F3),     k(F4),     k(F5),    k(F6),k(F7),      k(F8),  k(F9),    k(F10), k(F11),  k(F12)],
+    //     &[Trans,         k(Pause),Trans,     k(PScreen),Trans,    Trans,Trans,      Trans,  k(Delete),Trans,  Trans,   Trans ],
+    //     &[Trans,         Trans,   k(NumLock),k(Insert), k(Escape),Trans,k(CapsLock),k(Left),k(Down),  k(Up),  k(Right),Trans ],
+    //     &[k(NonUsBslash),k(Undo), CUT,       COPY,      PASTE,    Trans,Trans,      k(Home),k(PgDown),k(PgUp),k(End),  Trans ],
+    //     &[Trans,         Trans,   Trans,     Trans,     Trans,    Trans,Trans,      Trans,  Trans,    Trans,  Trans,   Trans ],
+    // ], &[
+    //     &[Trans,    Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans    ],
+    //     &[s!(Grave),s!(Kb1),s!(Kb2),s!(Kb3),s!(Kb4),s!(Kb5),s!(Kb6),s!(Kb7),s!(Kb8),s!(Kb9),s!(Kb0),s!(Minus)],
+    //     &[ k(Grave), k(Kb1), k(Kb2), k(Kb3), k(Kb4), k(Kb5), k(Kb6), k(Kb7), k(Kb8), k(Kb9), k(Kb0), k(Minus)],
+    //     &[a!(Grave),a!(Kb1),a!(Kb2),a!(Kb3),a!(Kb4),a!(Kb5),a!(Kb6),a!(Kb7),a!(Kb8),a!(Kb9),a!(Kb0),a!(Minus)],
+    //     &[Trans,    Trans,  Trans,  Trans,  CSPACE, Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans    ],
+    // ], &[
+    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
+    //     &[k(F1),k(F2),k(F3),k(F4),k(F5),k(F6),k(F7),k(F8),k(F9),k(F10),k(F11),k(F12)],
+    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
+    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
+    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
+    // ],
 ];
 
 #[app(device = nrf52840_hal::pac, peripherals = true)]
@@ -211,8 +227,10 @@ const APP: () = {
         matrix: Matrix<Cols, Rows>,
         debouncer: Debouncer<PressedKeys<U8, U8>>,
         layout: Layout,
-        timer: Timer<TIMER0, OneShot>,
+        timer: Timer<TIMER0, Periodic>,
+        timer1: Timer<TIMER1, Periodic>,
         // led: Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<gpio::AF6>>)>>,
+
         data: [RGB8; 43],
         last: [[bool; 8]; 8],
     }
@@ -221,6 +239,7 @@ const APP: () = {
     fn init(ctx: init::Context) -> init::LateResources {
         static mut CLOCKS: Option<Clocks<ExternalOscillator, Internal, LfOscStopped>> = None;
         static mut USB_BUS: Option<UsbBusAllocator<Usbd<'static>>> = None;
+
 
         defmt::info!("Hello, world!");
 
@@ -243,10 +262,12 @@ const APP: () = {
             .bit_is_clear()
         {}
 
+
         let clocks = Clocks::new(board.CLOCK);
         let clocks = clocks.enable_ext_hfosc();
 
-        let mut timer = Timer::new(board.TIMER0);
+        let mut timer = Timer::periodic(board.TIMER0);
+        let mut timer1 = Timer::periodic(board.TIMER1);
         let usbd = board.USBD;
         let gpios_p0 = P0Parts::new(board.P0);
         let gpios_p1 = P1Parts::new(board.P1);
@@ -261,14 +282,17 @@ const APP: () = {
         // let led = Ws2812::new(spi);
 
         timer.enable_interrupt();
-        timer.start(Timer::<TIMER0, OneShot>::TICKS_PER_SECOND / 1000);
+        timer.start(Timer::<TIMER0, Periodic>::TICKS_PER_SECOND / 1000);
+        timer1.enable_interrupt();
+        timer1.start(Timer::<TIMER1, Periodic>::TICKS_PER_SECOND / 10000);
 
         let leds = Leds {
             // caps_lock: led
         };
 
-        //         let usb_dm = gpioa.pa11;
-        //         let usb_dp = usb_dp.into_floating_input(&mut gpioa.crh);
+//         let usb_dm = gpioa.pa11;
+//         let usb_dp = usb_dp.into_floating_input(&mut gpioa.crh);
+
 
         // let usb = USB {
         //     usb_global: board.OTG_FS_GLOBAL,
@@ -324,8 +348,8 @@ const APP: () = {
                 .set_bit()
                 .epdata()
                 .set_bit()
-                .sof()
-                .set_bit()
+                // .sof()
+                // .set_bit()
                 .started()
                 .set_bit()
                 .usbevent()
@@ -371,139 +395,36 @@ const APP: () = {
 
         let c = 5;
 
-        let de = Debouncer::new(PressedKeys::default(), PressedKeys::default(), c);
+        let de = Debouncer::new(
+            PressedKeys::default(),
+            PressedKeys::default(),
+            c,
+        );
 
         init::LateResources {
             usb_dev,
             usb_class,
             timer,
+            timer1,
             debouncer: de,
             matrix: matrix.unwrap(),
             layout: Layout::new(LAYERS),
             // led,
             data: [colors::BLACK; 43],
-            last: [[false; 8]; 8],
+            last: [[false; 8]; 8]
         }
     }
 
-    #[task(binds = USBD, priority = 2, resources = [usb_dev, usb_class])]
-    fn usb_tx(mut c: usb_tx::Context) {
-        static mut ctr: u32 = 0;
-        static mut STATE: UsbDeviceState = UsbDeviceState::Default;
+    // #[task(binds = TIMER1, priority = 1, resources = [timer1])]
+    // fn usb_tick(mut c: usb_tick::Context) {
+    //     c.resources.timer1.event_compare_cc0().write(|w| w);
+    //     cortex_m::peripheral::NVIC::pend(hal::pac::Interrupt::USBD);
+    // }
 
-        let mut cleared = false;
 
-        'once: loop {
-            unsafe {
-                let usbd = &*USBD::ptr();
-
-                for i in 0..8 {
-                    if usbd.events_endepin[i].read().bits() != 0 {
-                        // defmt::info!("events_endepin[{:?}]", i);
-                        cleared = true;
-                        usbd.events_endepin[i].reset();
-                        break 'once;
-                    }
-
-                    if usbd.events_endepout[i].read().bits() != 0 {
-                        // defmt::info!("events_endepout[{:?}]", i);
-                        cleared = true;
-                        usbd.events_endepout[i].reset();
-                        break 'once;
-                    }
-                }
-
-                if usbd.events_endisoin.read().bits() != 0 {
-                    // defmt::info!("events_endisoin");
-                    cleared = true;
-                    usbd.events_endisoin.reset();
-                    break 'once;
-                }
-
-                if usbd.events_endisoout.read().bits() != 0 {
-                    // defmt::info!("events_endisoout");
-                    cleared = true;
-                    usbd.events_endisoout.reset();
-                    break 'once;
-                }
-
-                if usbd.events_ep0datadone.read().bits() != 0 {
-                    // defmt::info!("events_ep0datadone");
-                    cleared = true;
-                    usbd.events_ep0datadone.reset();
-                    break 'once;
-                }
-
-                if usbd.events_ep0setup.read().bits() != 0 {
-                    // defmt::info!("events_ep0setup");
-                    cleared = true;
-                    usbd.events_ep0setup.reset();
-                    break 'once;
-                }
-
-                if usbd.events_epdata.read().bits() != 0 {
-                    // defmt::info!("events_epdata");
-                    cleared = true;
-                    usbd.events_epdata.reset();
-                    break 'once;
-                }
-
-                if usbd.events_sof.read().bits() != 0 {
-                    // defmt::info!("events_sof");
-                    cleared = true;
-                    usbd.events_sof.reset();
-                    break 'once;
-                }
-
-                if usbd.events_started.read().bits() != 0 {
-                    // defmt::info!("events_started");
-                    cleared = true;
-                    usbd.events_started.reset();
-                    break 'once;
-                }
-
-                if usbd.events_usbevent.read().bits() != 0 {
-                    // defmt::info!("events_usbevent");
-                    cleared = true;
-                    usbd.events_usbevent.reset();
-                    break 'once;
-                }
-
-                if usbd.events_usbreset.read().bits() != 0 {
-                    // defmt::info!("events_usbreset");
-                    cleared = true;
-                    usbd.events_usbreset.reset();
-                    break 'once;
-                }
-            }
-        }
-
-        if !cleared {
-            defmt::error!("BAD");
-            keyboard::exit();
-        }
-
-        let new_state = c.resources.usb_dev.state();
-        if new_state != *STATE {
-            defmt::info!("State change!");
-            *STATE = new_state;
-
-            if new_state == UsbDeviceState::Configured {
-                defmt::info!("Configured!");
-            }
-        }
-
-        *ctr += 1;
-
-        if (*ctr % 1_000) == 0 {
-            defmt::info!("tick1k - usb");
-        }
-
-        usb_poll(&mut c.resources.usb_dev, &mut c.resources.usb_class);
-    }
-
-    #[task(binds = TIMER0, priority = 3, resources = [usb_class, matrix, debouncer, layout, timer, /* led, */ data, last])]
+    #[task(binds = TIMER0, priority = 1, resources = [usb_class, matrix, debouncer, layout, timer, /* led, */ data, last])]
     fn tick(mut c: tick::Context) {
+
         static mut COLOOP: Option<Cycle<Cloned<core::slice::Iter<'static, RGB<u8>>>>> = None;
         static mut COLOOP2: Option<Cycle<Cloned<core::slice::Iter<'static, RGB<u8>>>>> = None;
         static mut roller: usize = 0;
@@ -521,8 +442,6 @@ const APP: () = {
             colors::VIOLET,
         ];
 
-        // cortex_m::peripheral::NVIC::pend(Interrupt::USBD);
-
         let count = CTR_TCK.fetch_add(1, Ordering::SeqCst);
 
         if (count % 1000) == 0 {
@@ -530,9 +449,6 @@ const APP: () = {
         }
 
         c.resources.timer.event_compare_cc0().write(|w| w);
-        c.resources
-            .timer
-            .start(Timer::<TIMER0, OneShot>::TICKS_PER_SECOND / 1000);
 
         let coloop = COLOOP.get_or_insert_with(|| all_colors.iter().cloned().cycle());
         let coloop2 = COLOOP2.get_or_insert_with(|| all_colors.iter().cloned().cycle());
@@ -544,6 +460,7 @@ const APP: () = {
             .debouncer
             .events(c.resources.matrix.get().unwrap())
         {
+
             let (is_low, x, y) = match event {
                 Event::Press(x, y) => {
                     defmt::info!("Press: {:?}, {:?}", x, y);
@@ -568,14 +485,17 @@ const APP: () = {
         match c.resources.layout.tick() {
             CustomEvent::Press(p) => defmt::info!("press {:?}", p),
             CustomEvent::Release(r) => defmt::info!("release {:?}", r),
-            _ => {}
+            _ => {},
         }
         let rct = CTR_RPT.fetch_add(1, Ordering::SeqCst);
+        use rtic::Mutex;
+
         send_report(
             c.resources.layout.keycodes(),
             &mut c.resources.usb_class,
             &rct,
         );
+
 
         *ctr += 1;
 
@@ -600,37 +520,167 @@ const APP: () = {
         }
     }
 
-    #[idle]
-    fn idle(_ctx: idle::Context) -> ! {
+    #[idle(resources = [usb_dev, usb_class])]
+    fn idle(mut c: idle::Context) -> ! {
+        static mut ctr: u32 = 0;
+        static mut STATE: UsbDeviceState = UsbDeviceState::Default;
+
         loop {
-            cortex_m::asm::nop();
+            let mut cleared = false;
+
+            let new_state = c.resources.usb_dev.state();
+            if new_state != *STATE {
+                defmt::info!("State change!");
+                *STATE = new_state;
+
+                if new_state == UsbDeviceState::Configured {
+                    defmt::info!("Configured!");
+                    // keyboard::exit();
+                }
+            }
+
+            *ctr += 1;
+
+            if (*ctr % 1_000_000) == 0 {
+                defmt::info!("tick1m - usb");
+            }
+
+            use rtic::Mutex;
+            let x = &mut c.resources.usb_dev;
+            c.resources.usb_class.lock(|k| {
+                usb_poll(x, k);
+            });
+
+            // if new_state == UsbDeviceState::Configured {
+            //     'once: loop {
+            //         unsafe {
+            //             let usbd = &*USBD::ptr();
+
+            //             for i in 0..8 {
+            //                 if usbd.events_endepin[i].read().bits() != 0 {
+            //                     // defmt::info!("events_endepin[{:?}]", i);
+            //                     cleared = true;
+            //                     usbd.events_endepin[i].reset();
+            //                     break 'once;
+            //                 }
+
+            //                 if usbd.events_endepout[i].read().bits() != 0 {
+            //                     // defmt::info!("events_endepout[{:?}]", i);
+            //                     cleared = true;
+            //                     usbd.events_endepout[i].reset();
+            //                     break 'once;
+            //                 }
+            //             }
+
+            //             if usbd.events_endisoin.read().bits() != 0 {
+            //                 // defmt::info!("events_endisoin");
+            //                 cleared = true;
+            //                 usbd.events_endisoin.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_endisoout.read().bits() != 0 {
+            //                 // defmt::info!("events_endisoout");
+            //                 cleared = true;
+            //                 usbd.events_endisoout.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_ep0datadone.read().bits() != 0 {
+            //                 // defmt::info!("events_ep0datadone");
+            //                 cleared = true;
+            //                 usbd.events_ep0datadone.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_ep0setup.read().bits() != 0 {
+            //                 // defmt::info!("events_ep0setup");
+            //                 cleared = true;
+            //                 usbd.events_ep0setup.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_epdata.read().bits() != 0 {
+            //                 // defmt::info!("events_epdata");
+            //                 cleared = true;
+            //                 usbd.events_epdata.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_sof.read().bits() != 0 {
+            //                 // defmt::info!("events_sof");
+            //                 cleared = true;
+            //                 usbd.events_sof.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_started.read().bits() != 0 {
+            //                 // defmt::info!("events_started");
+            //                 cleared = true;
+            //                 usbd.events_started.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_usbevent.read().bits() != 0 {
+            //                 // defmt::info!("events_usbevent");
+            //                 cleared = true;
+            //                 usbd.events_usbevent.reset();
+            //                 break 'once;
+            //             }
+
+            //             if usbd.events_usbreset.read().bits() != 0 {
+            //                 // defmt::info!("events_usbreset");
+            //                 cleared = true;
+            //                 usbd.events_usbreset.reset();
+            //                 break 'once;
+            //             }
+            //         }
+            //     }
+
+            //     if !cleared {
+            //         defmt::error!("BAD");
+            //         keyboard::exit();
+            //     }
+            // }
         }
     }
+
+    // #[idle]
+    // fn idle(_ctx: idle::Context) -> ! {
+    //     loop {
+    //         cortex_m::asm::nop();
+    //     }
+    // }
 };
 
-
 use keyberon::hid::HidClass;
-fn send_report(
+
+fn send_report<'a>(
     iter: impl Iterator<Item = KeyCode>,
-    usb_class: &mut UsbClass<'static>,
+    usb_class: &mut HidClass<'static, Usbd<'static>, keyberon::keyboard::Keyboard<Leds>>,
     ctr: &u32,
-) {
+    spare: &'a mut [u8],
+) -> Option<&'a mut [u8]> {
+
     if (*ctr % 1000) == 0 {
         defmt::info!("tick1k - report!");
     }
 
     use rtic::Mutex;
     let report: KbHidReport = iter.collect();
+    let mut ctr = 0;
+
     if usb_class.device_mut().set_keyboard_report(report.clone()) {
         let mut rpt = report.as_bytes();
         while !rpt.is_empty() {
             match usb_class.write(rpt) {
                 Ok(0) => {
-                    defmt::error!("zero!");
-                    // continue;
-                    break;
+                    let (chunk, _) = spare.split_at_mut(rpt.len());
+                    chunk.copy_from_slice(rpt);
+                    return Some(chunk);
                 }
                 Ok(n) => {
+                    ctr = 0;
                     defmt::info!("wrote {:?}", n);
                     rpt = &rpt[n..];
                 }
@@ -640,23 +690,23 @@ fn send_report(
             }
         }
     }
+
+    None
 }
 
-fn usb_poll(usb_dev: &mut UsbDevice, keyboard: &mut resources::usb_class<'_>) {
-    use rtic::Mutex;
-    keyboard.lock(|keyboard| {
-        if usb_dev.poll(&mut [keyboard]) {
-            keyboard.poll();
-        }
-    });
-
+fn usb_poll(usb_dev: &mut UsbDevice, keyboard: &mut UsbClass) {
+    if usb_dev.poll(&mut [keyboard]) {
+        keyboard.poll();
+    }
 }
+
+
 
 fn scanner(
     data: &mut [RGB8],
     idx: &mut usize,
     color: &mut Cycle<Cloned<core::slice::Iter<'_, RGB<u8>>>>,
-    go_down: &mut bool,
+    go_down: &mut bool
 ) {
     let (keys, bar) = data.split_at_mut(24);
     *idx = idx.wrapping_add(1);
@@ -690,6 +740,7 @@ fn scanner(
             led.r = led.r / 2;
             led.g = led.g / 2;
             led.b = led.b / 2;
+
         } else {
             led.r = led.r.saturating_sub(4);
             led.g = led.g.saturating_sub(4);
@@ -724,7 +775,7 @@ fn row_col_to_pos(row: usize, col: usize) -> usize {
         (5, 1) => 22,
         (5, 2) => 21,
         (5, 3) => 20,
-        _ => 24,
+        _ => 24
     }
 }
 
