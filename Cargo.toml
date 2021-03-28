@@ -26,6 +26,10 @@ rand_core = "0.5"
 libm = "0.2.1"
 nb = "1.0.0"
 
+[dependencies.void]
+version = "1.0.2"
+default-features = false
+
 [dependencies.keyberon]
 # version = "0.1.1"
 path = "./vendor/keyberon"
