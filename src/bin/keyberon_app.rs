@@ -15,6 +15,7 @@ use keyberon::layout::Event;
 use core::convert::Infallible;
 use embedded_hal::digital::v2::{InputPin, OutputPin};
 use embedded_hal::timer::CountDown;
+use embedded_hal::blocking::i2c::{WriteRead, Write};
 use generic_array::typenum::U8;
 use keyberon::action::Action::{self, *};
 use keyberon::action::{k, l, m};
@@ -28,7 +29,7 @@ use nrf52840_hal::{
     time::U32Ext,
 };
 
-use core::sync::atomic::{Ordering, AtomicU32};
+use core::sync::atomic::{Ordering, AtomicU32, AtomicBool};
 
 use rtic::app;
 
@@ -215,6 +216,16 @@ use bbqueue::{
 };
 
 static REPORT_QUEUE: BBBuffer<bbconsts::U2048> = BBBuffer(ConstBBBuffer::new());
+static LAST: [[AtomicBool; 8]; 8] = [
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+];
 
 #[app(device = nrf52840_hal::pac, peripherals = true)]
 const APP: () = {
@@ -227,9 +238,9 @@ const APP: () = {
         timer: Timer<TIMER0, Periodic>,
         timer1: Timer<TIMER1, Periodic>,
         // led: Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<gpio::AF6>>)>>,
+        key_leds: IS31FL3733,
 
-        data: [RGB8; 43],
-        last: [[bool; 8]; 8],
+        data: [RGB8; 8 * 8],
 
         rpt_prod: FrameProducer<'static, bbconsts::U2048>,
         rpt_cons: FrameConsumer<'static, bbconsts::U2048>,
@@ -272,19 +283,25 @@ const APP: () = {
         let gpios_p0 = P0Parts::new(board.P0);
         let gpios_p1 = P1Parts::new(board.P1);
 
-        // let spi = Spi::spi5(
-        //     board.SPI5,
-        //     (NoSck, NoMiso, gpiob.pb8.into_alternate_af6()),
-        //     MODE,
-        //     3_000_000.hz(),
-        //     clocks
-        // );
-        // let led = Ws2812::new(spi);
+        let twim = Twim::new(
+            board.TWIM0,
+            TwimPins {
+                scl: gpios_p1.p1_06.into_floating_input().degrade(),
+                sda: gpios_p1.p1_05.into_floating_input().degrade(),
+            },
+            TwimFrequency::K400, // ?
+        );
+        let mut key_leds = IS31FL3733::new(twim, gpios_p1.p1_04.into_push_pull_output(Level::Low));
+
+        key_leds.reset().unwrap();
+        cortex_m::asm::delay(64_000_000 / 10);
+        key_leds.setup().unwrap();
+        cortex_m::asm::delay(64_000_000 / 5);
 
         timer.enable_interrupt();
         timer.start(Timer::<TIMER0, Periodic>::TICKS_PER_SECOND / 1000);
-        timer1.enable_interrupt();
-        timer1.start(Timer::<TIMER1, Periodic>::TICKS_PER_SECOND / 10000);
+        // timer1.enable_interrupt();
+        // timer1.start(Timer::<TIMER1, Periodic>::TICKS_PER_SECOND / 10000);
 
         let leds = Leds {
             // caps_lock: led
@@ -340,10 +357,10 @@ const APP: () = {
             matrix: matrix.unwrap(),
             layout: Layout::new(LAYERS),
             // led,
-            data: [colors::BLACK; 43],
-            last: [[false; 8]; 8],
+            data: [colors::BLACK; 8 * 8],
             rpt_prod,
             rpt_cons,
+            key_leds,
         }
     }
 
@@ -354,7 +371,7 @@ const APP: () = {
     // }
 
 
-    #[task(binds = TIMER0, priority = 1, resources = [usb_class, matrix, debouncer, layout, timer, /* led, */ data, last, rpt_prod])]
+    #[task(binds = TIMER0, priority = 1, resources = [usb_class, matrix, debouncer, layout, timer, key_leds, data, rpt_prod])]
     fn tick(mut c: tick::Context) {
 
         static mut COLOOP: Option<Cycle<Cloned<core::slice::Iter<'static, RGB<u8>>>>> = None;
@@ -385,8 +402,6 @@ const APP: () = {
         let coloop = COLOOP.get_or_insert_with(|| all_colors.iter().cloned().cycle());
         let coloop2 = COLOOP2.get_or_insert_with(|| all_colors.iter().cloned().cycle());
 
-        // c.resources.timer.clear_interrupt(timer::Event::TimeOut);
-
         for event in c
             .resources
             .debouncer
@@ -404,12 +419,18 @@ const APP: () = {
                 }
             };
 
-            if is_low && !c.resources.last[x][y] {
-                *c.resources.data.get_mut(row_col_to_pos(x, y)).unwrap() = coloop.next().unwrap();
-                // defmt::info!("Pressed Row: {:?} Col: {:?}", rx, cx);
+            if is_low && !LAST[x][y].load(Ordering::Acquire) {
+                defmt::info!("Coloring: {:?}, {:?}", x, y);
+                let pix_col = coloop.next().unwrap();
+                let idx = (x * 8) + y;
+                *c.resources.data.get_mut(idx).unwrap() = pix_col;
+                c.resources
+                    .key_leds
+                    .update_pixel(idx as u8, pix_col)
+                    .unwrap();
             }
 
-            *c.resources.last.get_mut(x).unwrap().get_mut(y).unwrap() = is_low;
+            LAST[x][y].store(is_low, Ordering::Release);
 
             c.resources.layout.event(event);
         }
@@ -435,46 +456,44 @@ const APP: () = {
         if *ctr >= 10 {
             *ctr = 0;
 
-            for (rx, row) in c.resources.last.iter().enumerate() {
-                for (cx, pix) in row.iter().enumerate() {
-                    if !*pix {
-                        let pix = c.resources.data.get_mut(row_col_to_pos(rx, cx)).unwrap();
-                        pix.r = pix.r.saturating_sub(1);
-                        pix.g = pix.g.saturating_sub(1);
-                        pix.b = pix.b.saturating_sub(1);
+            for (rx, row) in LAST.iter().enumerate() {
+                for (cx, pix_bool) in row.iter().enumerate() {
+                    if !pix_bool.load(Ordering::Acquire) {
+                        let idx = (rx * 8) + cx;
+                        let pix = c.resources.data.get_mut(idx).unwrap();
+                        pix.r = pix.r.saturating_sub(10);
+                        pix.g = pix.g.saturating_sub(10);
+                        pix.b = pix.b.saturating_sub(10);
+
+                        c.resources
+                            .key_leds
+                            .update_pixel(idx as u8, *pix)
+                            .unwrap();
                     }
                 }
             }
-
-            scanner(c.resources.data, roller, coloop2, ct_down);
-            // fix_spi_errors();
-
-            // c.resources.led.write(gamma(c.resources.data.iter().cloned())).ok();
         }
     }
 
     #[idle(resources = [usb_dev, usb_class, rpt_cons])]
     fn idle(mut c: idle::Context) -> ! {
-        static mut ctr: u32 = 0;
-        static mut STATE: UsbDeviceState = UsbDeviceState::Default;
+        let mut state: UsbDeviceState = UsbDeviceState::Default;
+        let mut ctr: u32 = 0;
 
         loop {
-            let mut cleared = false;
-
             let new_state = c.resources.usb_dev.state();
-            if new_state != *STATE {
+            if new_state != state {
                 defmt::info!("State change!");
-                *STATE = new_state;
+                state = new_state;
 
                 if new_state == UsbDeviceState::Configured {
                     defmt::info!("Configured!");
-                    // keyboard::exit();
                 }
             }
 
-            *ctr += 1;
+            ctr = ctr.wrapping_add(1);
 
-            if (*ctr % 1_000_000) == 0 {
+            if (ctr % 1_000_000) == 0 {
                 defmt::info!("tick1m - usb");
             }
 
@@ -490,15 +509,12 @@ const APP: () = {
                             // We do nothing, letting the grant drop so we can try again later
                         }
                         Ok(n) => {
-                            // ctr = 0;
                             if n == rgr.len() {
                                 defmt::info!("wrote {:?}", n);
                             } else {
                                 defmt::error!("wrote {:?} of {:?}", n, rgr.len());
                                 keyboard::exit();
                             }
-
-                            // rpt = &rpt[n..];
                         }
                         Err(_e) => {
                             panic!();
@@ -544,81 +560,75 @@ fn usb_poll(usb_dev: &mut UsbDevice, keyboard: &mut UsbClass) {
     }
 }
 
-
-
-fn scanner(
-    data: &mut [RGB8],
-    idx: &mut usize,
-    color: &mut Cycle<Cloned<core::slice::Iter<'_, RGB<u8>>>>,
-    go_down: &mut bool
-) {
-    let (keys, bar) = data.split_at_mut(24);
-    *idx = idx.wrapping_add(1);
-    let ctr = *idx % 8;
-    let idxn = *idx / 8;
-
-    let dlen = bar.len();
-
-    let idxm = if *go_down {
-        (dlen - 1) - (idxn % dlen)
-    } else {
-        idxn % dlen
-    };
-
-    for (i, led) in bar.iter_mut().enumerate() {
-        if (idxm == i) && (ctr == 0) {
-            *led = color.next().unwrap();
-
-            if *go_down && (idxm == 0) {
-                *go_down = false;
-                // for key in keys.iter_mut() {
-                //     *key = *led;
-                // }
-            } else if !*go_down && idxm == (dlen - 1) {
-                *go_down = true;
-                // for key in keys.iter_mut() {
-                //     *key = *led;
-                // }
-            }
-
-            led.r = led.r / 2;
-            led.g = led.g / 2;
-            led.b = led.b / 2;
-
-        } else {
-            led.r = led.r.saturating_sub(4);
-            led.g = led.g.saturating_sub(4);
-            led.b = led.b.saturating_sub(4);
-        }
-    }
+pub struct IS31FL3733 {
+    i2c: Twim<TWIM0>,
+    power: P1_04<Output<PushPull>>,
 }
 
-fn row_col_to_pos(row: usize, col: usize) -> usize {
-    match (row, col) {
-        (0, 0) => 0,
-        (0, 1) => 1,
-        (0, 2) => 2,
-        (0, 3) => 3,
-        (1, 0) => 7,
-        (1, 1) => 6,
-        (1, 2) => 5,
-        (1, 3) => 4,
-        (2, 0) => 8,
-        (2, 1) => 9,
-        (2, 2) => 10,
-        (2, 3) => 11,
-        (3, 0) => 15,
-        (3, 1) => 14,
-        (3, 2) => 13,
-        (3, 3) => 12,
-        (4, 0) => 16,
-        (4, 1) => 17,
-        (4, 2) => 18,
-        (4, 3) => 19,
-        (5, 0) => 23,
-        (5, 1) => 22,
-        (5, 2) => 21,
-        (5, 3) => 20,
-        _ => 24
+impl IS31FL3733 {
+    fn new(i2c: Twim<TWIM0>, mut power: P1_04<Output<PushPull>>) -> Self {
+        power.set_high().ok();
+        Self { i2c, power }
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<(), ()> {
+        <Twim<TWIM0> as Write>::write(&mut self.i2c, 0x50, buf).map_err(drop)
+    }
+
+    fn page(&mut self, page: u8) -> Result<(), ()> {
+        self.write(&[0xFE, 0xC5])?;
+        self.write(&[0xFD, page])
+    }
+
+    fn reset(&mut self) -> Result<(), ()> {
+        self.page(3)?;
+        self.read(0x11)
+    }
+
+    fn read(&mut self, reg_id: u8) -> Result<(), ()> {
+        let inbuf = [reg_id];
+        let mut outbuf = [0u8; 1];
+        self.i2c.write_read(0x50, &inbuf, &mut outbuf).map_err(drop)
+    }
+
+    fn set_brightness(&mut self, brightness: u8) -> Result<(), ()> {
+        self.page(3)?;
+        self.write(&[1, brightness])
+    }
+
+    fn setup(&mut self) -> Result<(), ()> {
+        self.page(3)?;
+        self.write(&[2, (2 << 5) | (0 << 1)])?;
+        self.write(&[3, (2 << 5) | (3 << 1)])?;
+        self.write(&[4, (0 << 4)])?;
+
+        self.write(&[6, (2 << 5) | (0 << 1)])?;
+        self.write(&[7, (2 << 5) | (2 << 1)])?;
+        self.write(&[8, (0 << 4)])?;
+
+        self.write(&[0xA, (1 << 5) | (0 << 1)])?;
+        self.write(&[0xB, (1 << 5) | (1 << 1)])?;
+        self.write(&[0xC, (0 << 4)])?;
+
+        self.write(&[0, 1])?;
+        self.write(&[0, 3])?;
+        self.write(&[0xE, 0])?;
+
+        self.page(0)?;
+        let mut buf = [0xFF; 0x18 + 1];
+        buf[0] = 0x00;
+        self.write(&buf)?;
+
+        self.set_brightness(255)
+    }
+
+    fn update_pixel(&mut self, i: u8, pix: RGB8) -> Result<(), ()> {
+        let row = i >> 4; // # i // 16
+        let col = i & 15; // # i % 16
+        self.page(1)?;
+        self.write(&[row * 48 + col, pix.g])?;
+        self.write(&[row * 48 + 16 + col, pix.r])?;
+        self.write(&[row * 48 + 32 + col, pix.b])?;
+        Ok(())
     }
 }
