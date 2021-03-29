@@ -165,31 +165,6 @@ pub static LAYERS: keyberon::layout::Layers = &[
         &[k(V),        k(C),       k(X),     k(Z),      k(LShift),   k(LCtrl),   k(LGui),    k(LAlt)    ],
         &[k(Space),    k(RAlt),    k(Menu),  TODO,      k(RCtrl),    Trans,      Trans,      Trans      ],
     ]
-    // &[
-    //     &[k(Grave),  k(Kb1),k(Kb2),k(Kb3),  k(Kb4),k(Kb5), k(Kb6),   k(Kb7),  k(Kb8), k(Kb9),  k(Kb0),   k(Minus)   ],
-    //     &[k(Tab),     k(Q), k(W),  k(E),    k(R), k(T),    k(Y),     k(U),    k(I),   k(O),    k(P),     k(LBracket)],
-    //     &[k(RBracket),k(A), k(S),  k(D),    k(F), k(G),    k(H),     k(J),    k(K),   k(L),    k(SColon),k(Quote)   ],
-    //     &[k(Equal),   k(Z), k(X),  k(C),    k(V), k(B),    k(N),     k(M),    k(Comma),k(Dot), k(Slash), k(Bslash)  ],
-    //     &[Trans,      Trans,k(LGui),k(LAlt),L1_SP,k(LCtrl),k(RShift),L2_ENTER,k(RAlt),k(BSpace),Trans,   Trans      ],
-    // ], &[
-    //     &[k(F1),         k(F2),   k(F3),     k(F4),     k(F5),    k(F6),k(F7),      k(F8),  k(F9),    k(F10), k(F11),  k(F12)],
-    //     &[Trans,         k(Pause),Trans,     k(PScreen),Trans,    Trans,Trans,      Trans,  k(Delete),Trans,  Trans,   Trans ],
-    //     &[Trans,         Trans,   k(NumLock),k(Insert), k(Escape),Trans,k(CapsLock),k(Left),k(Down),  k(Up),  k(Right),Trans ],
-    //     &[k(NonUsBslash),k(Undo), CUT,       COPY,      PASTE,    Trans,Trans,      k(Home),k(PgDown),k(PgUp),k(End),  Trans ],
-    //     &[Trans,         Trans,   Trans,     Trans,     Trans,    Trans,Trans,      Trans,  Trans,    Trans,  Trans,   Trans ],
-    // ], &[
-    //     &[Trans,    Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans    ],
-    //     &[s!(Grave),s!(Kb1),s!(Kb2),s!(Kb3),s!(Kb4),s!(Kb5),s!(Kb6),s!(Kb7),s!(Kb8),s!(Kb9),s!(Kb0),s!(Minus)],
-    //     &[ k(Grave), k(Kb1), k(Kb2), k(Kb3), k(Kb4), k(Kb5), k(Kb6), k(Kb7), k(Kb8), k(Kb9), k(Kb0), k(Minus)],
-    //     &[a!(Grave),a!(Kb1),a!(Kb2),a!(Kb3),a!(Kb4),a!(Kb5),a!(Kb6),a!(Kb7),a!(Kb8),a!(Kb9),a!(Kb0),a!(Minus)],
-    //     &[Trans,    Trans,  Trans,  Trans,  CSPACE, Trans,  Trans,  Trans,  Trans,  Trans,  Trans,  Trans    ],
-    // ], &[
-    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-    //     &[k(F1),k(F2),k(F3),k(F4),k(F5),k(F6),k(F7),k(F8),k(F9),k(F10),k(F11),k(F12)],
-    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-    //     &[Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans,Trans, Trans, Trans ],
-    // ],
 ];
 
 use bbqueue::{
@@ -382,11 +357,16 @@ const APP: () = {
                 if !pix_bool.load(Ordering::Acquire) {
                     let idx = (rx * 8) + cx;
                     let pix = c.resources.data.get_mut(idx).unwrap();
-                    pix.r = pix.r.saturating_sub(10);
-                    pix.g = pix.g.saturating_sub(10);
-                    pix.b = pix.b.saturating_sub(10);
+                    let mut pix_clone = pix.clone();
+                    pix_clone.r = pix.r.saturating_sub(10);
+                    pix_clone.g = pix.g.saturating_sub(10);
+                    pix_clone.b = pix.b.saturating_sub(10);
 
-                    c.resources.key_leds.update_pixel(idx as u8, *pix).unwrap();
+                    if pix_clone != *pix {
+                        c.resources.key_leds.update_pixel(idx as u8, *pix).unwrap();
+                        *pix = pix_clone;
+                    }
+
                 }
             }
         }
@@ -446,6 +426,7 @@ const APP: () = {
     fn idle(mut c: idle::Context) -> ! {
         let mut state: UsbDeviceState = UsbDeviceState::Default;
         let mut ctr: u32 = 0;
+        let mut skip_flag = false;
 
         loop {
             let new_state = c.resources.usb_dev.state();
@@ -474,20 +455,29 @@ const APP: () = {
                     match usb_cl.write(&rgr) {
                         Ok(0) => {
                             // We do nothing, letting the grant drop so we can try again later
+                            if !skip_flag {
+                                skip_flag = true;
+                                defmt::warn!("skipping!");
+                            }
                         }
                         Ok(n) => {
+                            if skip_flag {
+                                defmt::warn!("cleared skip!");
+                                skip_flag = false;
+                            }
                             if n == rgr.len() {
                                 defmt::info!("wrote {:?}", n);
                             } else {
                                 defmt::error!("wrote {:?} of {:?}", n, rgr.len());
                                 keyboard::exit();
                             }
+                            rgr.release();
                         }
                         Err(_e) => {
                             panic!();
                         }
                     }
-                    rgr.release();
+
                 }
             });
         }
@@ -511,6 +501,8 @@ fn send_report<'a>(
         if let Ok(mut wgr) = queue.grant(rpt.len()) {
             wgr.copy_from_slice(rpt);
             wgr.commit(rpt.len());
+        } else {
+            panic!("Overfull queue!");
         }
     }
 
