@@ -2,25 +2,31 @@
 #![no_std]
 
 use core::{
-    iter::{
-        Cloned,
-        Cycle,
-    },
-    sync::atomic::{
-        Ordering,
-        AtomicU32,
-        AtomicBool
-    },
+    iter::{Cloned, Cycle},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
+use embedded_hal::{
+    blocking::i2c::{Write, WriteRead},
+    digital::v2::{InputPin, OutputPin},
+    timer::CountDown,
+};
+use generic_array::typenum::U8;
+use keyberon::{
+    action::{
+        k,
+        Action::{self, *},
+    },
+    debounce::Debouncer,
+    hid::HidClass,
+    impl_heterogenous_array,
+    key_code::{KbHidReport, KeyCode, KeyCode::*},
+    layout::{CustomEvent, Event, Layout},
+    matrix::{Matrix, PressedKeys},
+};
 use keyboard as _;
 use nrf52840_hal::{
-    clocks::{
-        Clocks,
-        ExternalOscillator,
-        Internal,
-        LfOscStopped,
-    },
+    clocks::{Clocks, ExternalOscillator, Internal, LfOscStopped},
     gpio::{
         p0::Parts as P0Parts,
         p1::{Parts as P1Parts, P1_04},
@@ -32,44 +38,9 @@ use nrf52840_hal::{
     usbd::Usbd,
     Twim,
 };
-use embedded_hal::{
-    digital::v2::{InputPin, OutputPin},
-    timer::CountDown,
-    blocking::i2c::{WriteRead, Write},
-};
-use generic_array::typenum::U8;
-use keyberon::{
-    action::{
-        Action::{self, *},
-        k,
-    },
-    debounce::Debouncer,
-    impl_heterogenous_array,
-    key_code::{
-        KeyCode::*,
-        KbHidReport,
-        KeyCode
-    },
-    layout::{
-        Layout,
-        CustomEvent,
-        Event,
-    },
-    matrix::{Matrix, PressedKeys},
-    hid::HidClass,
-};
 use rtic::app;
-use usb_device::{
-    bus::UsbBusAllocator,
-    class::UsbClass as _,
-    device::UsbDeviceState,
-};
-use smart_leds::{
-    RGB,
-    RGB8,
-    colors,
-    gamma,
-};
+use smart_leds::{colors, gamma, RGB, RGB8};
+use usb_device::{bus::UsbBusAllocator, class::UsbClass as _, device::UsbDeviceState};
 
 static ALL_COLORS: &[RGB8; 7] = &[
     colors::RED,
@@ -85,7 +56,7 @@ type UsbClass<'a> = keyberon::Class<'static, Usbd<'a>, Leds>;
 type UsbDevice<'a> = usb_device::device::UsbDevice<'static, Usbd<'a>>;
 
 pub struct Leds {
-//     caps_lock: gpio::gpioc::PC13<gpio::Output<gpio::PushPull>>,
+    //     caps_lock: gpio::gpioc::PC13<gpio::Output<gpio::PushPull>>,
 }
 
 impl keyberon::keyboard::Leds for Leds {
@@ -110,7 +81,6 @@ impl keyberon::keyboard::Leds for Leds {
         defmt::info!("kana: {:?}", status)
     }
 }
-
 
 pub struct Cols(
     pub Pin<Input<PullUp>>,
@@ -222,14 +192,10 @@ pub static LAYERS: keyberon::layout::Layers = &[
     // ],
 ];
 
-
 use bbqueue::{
-    BBBuffer, ConstBBBuffer,
     consts as bbconsts,
-    framed::{
-        FrameProducer,
-        FrameConsumer,
-    },
+    framed::{FrameConsumer, FrameProducer},
+    BBBuffer, ConstBBBuffer,
 };
 
 static REPORT_QUEUE: BBBuffer<bbconsts::U2048> = BBBuffer(ConstBBBuffer::new());
@@ -281,7 +247,6 @@ const APP: () = {
         static mut CLOCKS: Option<Clocks<ExternalOscillator, Internal, LfOscStopped>> = None;
         static mut USB_BUS: Option<UsbBusAllocator<Usbd<'static>>> = None;
 
-
         defmt::info!("Hello, world!");
 
         let board = ctx.device;
@@ -302,7 +267,6 @@ const APP: () = {
             .events_usbpwrrdy()
             .bit_is_clear()
         {}
-
 
         let clocks = Clocks::new(board.CLOCK);
         let clocks = clocks.enable_ext_hfosc();
@@ -370,11 +334,7 @@ const APP: () = {
 
         let c = 5;
 
-        let de = Debouncer::new(
-            PressedKeys::default(),
-            PressedKeys::default(),
-            c,
-        );
+        let de = Debouncer::new(PressedKeys::default(), PressedKeys::default(), c);
 
         let (rpt_prod, rpt_cons) = REPORT_QUEUE.try_split_framed().unwrap();
 
@@ -426,10 +386,7 @@ const APP: () = {
                     pix.g = pix.g.saturating_sub(10);
                     pix.b = pix.b.saturating_sub(10);
 
-                    c.resources
-                        .key_leds
-                        .update_pixel(idx as u8, *pix)
-                        .unwrap();
+                    c.resources.key_leds.update_pixel(idx as u8, *pix).unwrap();
                 }
             }
         }
@@ -437,7 +394,6 @@ const APP: () = {
 
     #[task(binds = TIMER0, priority = 1, resources = [usb_class, matrix, debouncer, layout, timer, data, rpt_prod])]
     fn tick(mut c: tick::Context) {
-
         let count = CTR_TCK.fetch_add(1, Ordering::SeqCst);
 
         if (count % 1000) == 0 {
@@ -451,7 +407,6 @@ const APP: () = {
             .debouncer
             .events(c.resources.matrix.get().unwrap())
         {
-
             let (is_low, x, y) = match event {
                 Event::Press(x, y) => {
                     defmt::info!("Press: {:?}, {:?}", x, y);
@@ -475,7 +430,7 @@ const APP: () = {
         match c.resources.layout.tick() {
             CustomEvent::Press(p) => defmt::info!("press {:?}", p),
             CustomEvent::Release(r) => defmt::info!("release {:?}", r),
-            _ => {},
+            _ => {}
         }
         let rct = CTR_RPT.fetch_add(1, Ordering::SeqCst);
 
@@ -539,14 +494,12 @@ const APP: () = {
     }
 };
 
-
 fn send_report<'a>(
     iter: impl Iterator<Item = KeyCode>,
     usb_class: &mut HidClass<'static, Usbd<'static>, keyberon::keyboard::Keyboard<Leds>>,
     ctr: &u32,
     queue: &'a mut FrameProducer<'static, bbconsts::U2048>,
 ) -> Option<&'a mut [u8]> {
-
     if (*ctr % 1000) == 0 {
         defmt::info!("tick1k - report!");
     }
