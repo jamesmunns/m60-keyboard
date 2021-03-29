@@ -1,68 +1,85 @@
 #![no_main]
 #![no_std]
 
-#![allow(unused_imports)]
-
-use hal::clocks::ExternalOscillator;
-use hal::clocks::Internal;
-use hal::clocks::LfOscStopped;
-use keyberon::action::HoldTapConfig;
-use keyboard as _;
-use generic_array::GenericArray;
-use keyberon::layout::CustomEvent;
-use keyberon::layout::Event;
-
-use core::convert::Infallible;
-use embedded_hal::digital::v2::{InputPin, OutputPin};
-use embedded_hal::timer::CountDown;
-use embedded_hal::blocking::i2c::{WriteRead, Write};
-use generic_array::typenum::U8;
-use keyberon::action::Action::{self, *};
-use keyberon::action::{k, l, m};
-use keyberon::debounce::Debouncer;
-use keyberon::impl_heterogenous_array;
-use keyberon::key_code::KeyCode::*;
-use keyberon::key_code::{KbHidReport, KeyCode};
-use keyberon::layout::Layout;
-use keyberon::matrix::{Matrix, PressedKeys};
-use nrf52840_hal::{
-    time::U32Ext,
+use core::{
+    iter::{
+        Cloned,
+        Cycle,
+    },
+    sync::atomic::{
+        Ordering,
+        AtomicU32,
+        AtomicBool
+    },
 };
 
-use core::sync::atomic::{Ordering, AtomicU32, AtomicBool};
-
-use rtic::app;
-
+use keyboard as _;
 use nrf52840_hal::{
-    self as hal,
-    clocks::{Clocks, LfOscConfiguration},
+    clocks::{
+        Clocks,
+        ExternalOscillator,
+        Internal,
+        LfOscStopped,
+    },
     gpio::{
         p0::Parts as P0Parts,
         p1::{Parts as P1Parts, P1_04},
         Input, Level, Output, Pin, PullUp, PushPull,
     },
-    pac::{Peripherals, TIMER0, TIMER1, TIMER2, TWIM0, UARTE0, USBD},
-    ppi::{Parts as PpiParts, Ppi0},
-    spim::{Frequency, Pins as SpimPins, Spim, MODE_0},
-    spis::{Mode, Pins as SpisPins, Spis, Transfer},
-    timer::{Instance as TimerInstance, Periodic, Timer, OneShot},
+    pac::{TIMER0, TIMER1, TWIM0},
+    timer::{Instance as TimerInstance, Periodic, Timer},
     twim::{Frequency as TwimFrequency, Pins as TwimPins},
-    uarte::{Baudrate, Parity, Pins},
     usbd::Usbd,
     Twim,
 };
+use embedded_hal::{
+    digital::v2::{InputPin, OutputPin},
+    timer::CountDown,
+    blocking::i2c::{WriteRead, Write},
+};
+use generic_array::typenum::U8;
+use keyberon::{
+    action::{
+        Action::{self, *},
+        k,
+    },
+    debounce::Debouncer,
+    impl_heterogenous_array,
+    key_code::{
+        KeyCode::*,
+        KbHidReport,
+        KeyCode
+    },
+    layout::{
+        Layout,
+        CustomEvent,
+        Event,
+    },
+    matrix::{Matrix, PressedKeys},
+    hid::HidClass,
+};
+use rtic::app;
+use usb_device::{
+    bus::UsbBusAllocator,
+    class::UsbClass as _,
+    device::UsbDeviceState,
+};
+use smart_leds::{
+    RGB,
+    RGB8,
+    colors,
+    gamma,
+};
 
-use usb_device::bus::UsbBusAllocator;
-use usb_device::class::UsbClass as _;
-use usb_device::device::UsbDeviceState;
-
-use core::iter::Cloned;
-use core::iter::Cycle;
-
-use smart_leds::RGB;
-use ws2812_spi::{Ws2812, MODE};
-use cortex_m::asm::delay;
-use smart_leds::{RGB8, SmartLedsWrite, colors, gamma};
+static ALL_COLORS: &[RGB8; 7] = &[
+    colors::RED,
+    colors::ORANGE,
+    colors::YELLOW,
+    colors::GREEN,
+    colors::BLUE,
+    colors::INDIGO,
+    colors::VIOLET,
+];
 
 type UsbClass<'a> = keyberon::Class<'static, Usbd<'a>, Leds>;
 type UsbDevice<'a> = usb_device::device::UsbDevice<'static, Usbd<'a>>;
@@ -216,7 +233,21 @@ use bbqueue::{
 };
 
 static REPORT_QUEUE: BBBuffer<bbconsts::U2048> = BBBuffer(ConstBBBuffer::new());
+
+#[rustfmt::skip]
 static LAST: [[AtomicBool; 8]; 8] = [
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+    [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
+];
+
+#[rustfmt::skip]
+static NEEDS_COLOR: [[AtomicBool; 8]; 8] = [
     [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
     [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
     [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), ],
@@ -237,7 +268,6 @@ const APP: () = {
         layout: Layout,
         timer: Timer<TIMER0, Periodic>,
         timer1: Timer<TIMER1, Periodic>,
-        // led: Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<gpio::AF6>>)>>,
         key_leds: IS31FL3733,
 
         data: [RGB8; 8 * 8],
@@ -300,8 +330,8 @@ const APP: () = {
 
         timer.enable_interrupt();
         timer.start(Timer::<TIMER0, Periodic>::TICKS_PER_SECOND / 1000);
-        // timer1.enable_interrupt();
-        // timer1.start(Timer::<TIMER1, Periodic>::TICKS_PER_SECOND / 10000);
+        timer1.enable_interrupt();
+        timer1.start(Timer::<TIMER1, Periodic>::TICKS_PER_SECOND / 30);
 
         let leds = Leds {
             // caps_lock: led
@@ -364,32 +394,49 @@ const APP: () = {
         }
     }
 
-    // #[task(binds = TIMER1, priority = 1, resources = [timer1])]
-    // fn usb_tick(mut c: usb_tick::Context) {
-    //     c.resources.timer1.event_compare_cc0().write(|w| w);
-    //     cortex_m::peripheral::NVIC::pend(hal::pac::Interrupt::USBD);
-    // }
-
-
-    #[task(binds = TIMER0, priority = 1, resources = [usb_class, matrix, debouncer, layout, timer, key_leds, data, rpt_prod])]
-    fn tick(mut c: tick::Context) {
-
+    #[task(binds = TIMER1, priority = 1, resources = [data, key_leds, timer1])]
+    fn led_tick(c: led_tick::Context) {
         static mut COLOOP: Option<Cycle<Cloned<core::slice::Iter<'static, RGB<u8>>>>> = None;
-        static mut COLOOP2: Option<Cycle<Cloned<core::slice::Iter<'static, RGB<u8>>>>> = None;
-        static mut roller: usize = 0;
 
-        static mut ctr: u32 = 0;
-        static mut ct_down: bool = false;
+        c.resources.timer1.event_compare_cc0().write(|w| w);
 
-        static all_colors: &[RGB8; 7] = &[
-            colors::RED,
-            colors::ORANGE,
-            colors::YELLOW,
-            colors::GREEN,
-            colors::BLUE,
-            colors::INDIGO,
-            colors::VIOLET,
-        ];
+        let coloop = COLOOP.get_or_insert_with(|| ALL_COLORS.iter().cloned().cycle());
+
+        for (rx, row) in NEEDS_COLOR.iter().enumerate() {
+            for (cx, pix_bool) in row.iter().enumerate() {
+                if pix_bool.swap(false, Ordering::AcqRel) {
+                    defmt::info!("Coloring: {:?}, {:?}", rx, cx);
+                    let pix_col = coloop.next().unwrap();
+                    let idx = (rx * 8) + cx;
+                    *c.resources.data.get_mut(idx).unwrap() = pix_col;
+                    c.resources
+                        .key_leds
+                        .update_pixel(idx as u8, pix_col)
+                        .unwrap();
+                }
+            }
+        }
+
+        for (rx, row) in LAST.iter().enumerate() {
+            for (cx, pix_bool) in row.iter().enumerate() {
+                if !pix_bool.load(Ordering::Acquire) {
+                    let idx = (rx * 8) + cx;
+                    let pix = c.resources.data.get_mut(idx).unwrap();
+                    pix.r = pix.r.saturating_sub(10);
+                    pix.g = pix.g.saturating_sub(10);
+                    pix.b = pix.b.saturating_sub(10);
+
+                    c.resources
+                        .key_leds
+                        .update_pixel(idx as u8, *pix)
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    #[task(binds = TIMER0, priority = 1, resources = [usb_class, matrix, debouncer, layout, timer, data, rpt_prod])]
+    fn tick(mut c: tick::Context) {
 
         let count = CTR_TCK.fetch_add(1, Ordering::SeqCst);
 
@@ -398,9 +445,6 @@ const APP: () = {
         }
 
         c.resources.timer.event_compare_cc0().write(|w| w);
-
-        let coloop = COLOOP.get_or_insert_with(|| all_colors.iter().cloned().cycle());
-        let coloop2 = COLOOP2.get_or_insert_with(|| all_colors.iter().cloned().cycle());
 
         for event in c
             .resources
@@ -420,14 +464,7 @@ const APP: () = {
             };
 
             if is_low && !LAST[x][y].load(Ordering::Acquire) {
-                defmt::info!("Coloring: {:?}, {:?}", x, y);
-                let pix_col = coloop.next().unwrap();
-                let idx = (x * 8) + y;
-                *c.resources.data.get_mut(idx).unwrap() = pix_col;
-                c.resources
-                    .key_leds
-                    .update_pixel(idx as u8, pix_col)
-                    .unwrap();
+                NEEDS_COLOR[x][y].store(true, Ordering::Release);
             }
 
             LAST[x][y].store(is_low, Ordering::Release);
@@ -441,7 +478,6 @@ const APP: () = {
             _ => {},
         }
         let rct = CTR_RPT.fetch_add(1, Ordering::SeqCst);
-        use rtic::Mutex;
 
         send_report(
             c.resources.layout.keycodes(),
@@ -449,30 +485,6 @@ const APP: () = {
             &rct,
             &mut c.resources.rpt_prod,
         );
-
-
-        *ctr += 1;
-
-        if *ctr >= 10 {
-            *ctr = 0;
-
-            for (rx, row) in LAST.iter().enumerate() {
-                for (cx, pix_bool) in row.iter().enumerate() {
-                    if !pix_bool.load(Ordering::Acquire) {
-                        let idx = (rx * 8) + cx;
-                        let pix = c.resources.data.get_mut(idx).unwrap();
-                        pix.r = pix.r.saturating_sub(10);
-                        pix.g = pix.g.saturating_sub(10);
-                        pix.b = pix.b.saturating_sub(10);
-
-                        c.resources
-                            .key_leds
-                            .update_pixel(idx as u8, *pix)
-                            .unwrap();
-                    }
-                }
-            }
-        }
     }
 
     #[idle(resources = [usb_dev, usb_class, rpt_cons])]
@@ -527,7 +539,6 @@ const APP: () = {
     }
 };
 
-use keyberon::hid::HidClass;
 
 fn send_report<'a>(
     iter: impl Iterator<Item = KeyCode>,
@@ -540,7 +551,6 @@ fn send_report<'a>(
         defmt::info!("tick1k - report!");
     }
 
-    use rtic::Mutex;
     let report: KbHidReport = iter.collect();
 
     if usb_class.device_mut().set_keyboard_report(report.clone()) {
