@@ -25,6 +25,7 @@ generic-array = "0.14"
 rand_core = "0.5"
 libm = "0.2.1"
 nb = "1.0.0"
+bbqueue = "0.4.12"
 
 [dependencies.void]
 version = "1.0.2"
