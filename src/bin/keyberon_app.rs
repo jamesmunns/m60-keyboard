@@ -3,7 +3,7 @@
 
 use core::{
     iter::{Cloned, Cycle},
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
 use embedded_hal::{
@@ -15,6 +15,7 @@ use generic_array::typenum::U8;
 use keyberon::{
     action::{
         k,
+        l,
         Action::{self, *},
     },
     debounce::Debouncer,
@@ -163,8 +164,18 @@ pub static LAYERS: keyberon::layout::Layers = &[
         &[k(F),        k(G),       k(H),     k(J),      k(K),        k(L),       k(SColon),  k(Quote)   ],
         &[k(Enter),    k(RShift),  k(Slash), k(Dot),    k(Comma),    k(M),       k(N),       k(B)       ],
         &[k(V),        k(C),       k(X),     k(Z),      k(LShift),   k(LCtrl),   k(LGui),    k(LAlt)    ],
-        &[k(Space),    k(RAlt),    k(Menu),  TODO,      k(RCtrl),    Trans,      Trans,      Trans      ],
-    ]
+        &[k(Space),    l(1),       k(Menu),  k(RAlt),   k(RCtrl),    Trans,      Trans,      Trans      ],
+    ],
+    &[
+        &[k(Grave),    k(F1),      k(F2),    k(F3),     k(F4),       k(F5),      k(F6),      k(F7)      ],
+        &[k(F8),       k(F9),      k(F10),   k(F11),    k(F12),      k(Delete),  Trans,      Trans      ],
+        &[k(PgDown),   k(Up),      k(PgUp),  Trans,     Trans,       Trans,      Trans,      Trans      ],
+        &[Trans,       Trans,      Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+        &[Trans,       Trans,      Trans,    Trans,     Trans,       k(Left),    k(Down),    k(Right)   ],
+        &[Trans,       Trans,      Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+        &[Trans,       Trans,      Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+        &[Trans,       l(1),       Trans,    Trans,     Trans,       Trans,      Trans,      Trans      ],
+    ],
 ];
 
 use bbqueue::{
@@ -174,6 +185,7 @@ use bbqueue::{
 };
 
 static REPORT_QUEUE: BBBuffer<bbconsts::U2048> = BBBuffer(ConstBBBuffer::new());
+static CURRENT_LAYER: AtomicUsize = AtomicUsize::new(0xFFFF_FFFF);
 
 #[rustfmt::skip]
 static LAST: [[AtomicBool; 8]; 8] = [
@@ -336,37 +348,69 @@ const APP: () = {
         c.resources.timer1.event_compare_cc0().write(|w| w);
 
         let coloop = COLOOP.get_or_insert_with(|| ALL_COLORS.iter().cloned().cycle());
+        let layer = CURRENT_LAYER.load(Ordering::Acquire);
+
+        let special_color = |rx, cx| {
+            match (layer, rx, cx) {
+                (1, 0, 0) => Some(colors::RED),    // esc -> ~
+                (1, 0, 1) => Some(colors::VIOLET), // F keys
+                (1, 0, 2) => Some(colors::VIOLET), // F keys
+                (1, 0, 3) => Some(colors::VIOLET), // F keys
+                (1, 0, 4) => Some(colors::VIOLET), // F keys
+                (1, 0, 5) => Some(colors::VIOLET), // F keys
+                (1, 0, 6) => Some(colors::VIOLET), // F keys
+                (1, 0, 7) => Some(colors::VIOLET), // F keys
+                (1, 1, 0) => Some(colors::VIOLET), // F keys
+                (1, 1, 1) => Some(colors::VIOLET), // F keys
+                (1, 1, 2) => Some(colors::VIOLET), // F keys
+                (1, 1, 3) => Some(colors::VIOLET), // F keys
+                (1, 1, 4) => Some(colors::VIOLET), // F keys
+                (1, 4, 5) => Some(colors::ORANGE), // left
+                (1, 4, 6) => Some(colors::ORANGE), // down
+                (1, 4, 7) => Some(colors::ORANGE), // right
+                (1, 2, 2) => Some(colors::BLUE),   // pgup
+                (1, 2, 1) => Some(colors::ORANGE), // up
+                (1, 2, 0) => Some(colors::BLUE),   // pgdown
+                (1, 7, 1) => Some(colors::RED),    // fn/layer
+                (1, 1, 5) => Some(colors::RED),    // backspace
+                _ => None
+            }
+        };
 
         for (rx, row) in NEEDS_COLOR.iter().enumerate() {
             for (cx, pix_bool) in row.iter().enumerate() {
                 if pix_bool.swap(false, Ordering::AcqRel) {
-                    defmt::info!("Coloring: {:?}, {:?}", rx, cx);
-                    let pix_col = coloop.next().unwrap();
-                    let idx = (rx * 8) + cx;
-                    *c.resources.data.get_mut(idx).unwrap() = pix_col;
-                    c.resources
-                        .key_leds
-                        .update_pixel(idx as u8, pix_col)
-                        .unwrap();
+                    if special_color(rx, cx).is_none() {
+                        defmt::info!("Coloring: {:?}, {:?}", rx, cx);
+                        let pix_col = coloop.next().unwrap();
+                        let idx = (rx * 8) + cx;
+                        *c.resources.data.get_mut(idx).unwrap() = pix_col;
+                        c.resources
+                            .key_leds
+                            .update_pixel(idx as u8, pix_col)
+                            .unwrap();
+                    }
                 }
             }
         }
 
         for (rx, row) in LAST.iter().enumerate() {
             for (cx, pix_bool) in row.iter().enumerate() {
-                if !pix_bool.load(Ordering::Acquire) {
-                    let idx = (rx * 8) + cx;
-                    let pix = c.resources.data.get_mut(idx).unwrap();
-                    let mut pix_clone = pix.clone();
+                let idx = (rx * 8) + cx;
+                let pix = c.resources.data.get_mut(idx).unwrap();
+                let mut pix_clone = pix.clone();
+
+                if let Some(special) = special_color(rx, cx) {
+                    pix_clone = special;
+                } else if !pix_bool.load(Ordering::Acquire) {
                     pix_clone.r = pix.r.saturating_sub(10);
                     pix_clone.g = pix.g.saturating_sub(10);
                     pix_clone.b = pix.b.saturating_sub(10);
+                }
 
-                    if pix_clone != *pix {
-                        c.resources.key_leds.update_pixel(idx as u8, *pix).unwrap();
-                        *pix = pix_clone;
-                    }
-
+                if pix_clone != *pix {
+                    c.resources.key_leds.update_pixel(idx as u8, pix_clone).unwrap();
+                    *pix = pix_clone;
                 }
             }
         }
@@ -378,6 +422,12 @@ const APP: () = {
 
         if (count % 1000) == 0 {
             defmt::info!("tick1k - timer");
+        }
+
+        let layer = c.resources.layout.current_layer();
+        if layer != CURRENT_LAYER.load(Ordering::Acquire) {
+            defmt::info!("New layer: {:?}", layer);
+            CURRENT_LAYER.store(layer, Ordering::Release);
         }
 
         c.resources.timer.event_compare_cc0().write(|w| w);
